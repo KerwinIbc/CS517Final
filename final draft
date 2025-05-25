@@ -1,0 +1,110 @@
+from pysmt.shortcuts import Symbol, And, GE, LE, Real, Bool, Ite, Plus, Times, Solver
+from pysmt.typing import REAL, BOOL
+
+
+def check_support_vector(X, y, missing_mask, targrt_idx):
+    """
+
+    :param X: feature matrix(list of lists)
+    :param y: label vector(list of 1/-1)
+    :param missing_mask: boolean matrix indicating missing position
+    :param targrt_idx: index of target example to check
+    :return: True if the example can be a support vector, False otherwise
+    """
+
+    # initialize the solver
+    with Solver(name='z3') as solver:
+        missing_var = []
+        missing_var_map = {}  # (example_idx,feature_example)
+
+        var_index = 0
+        for i in range(len(X)):
+            for j in range(len(X[i])):
+                if missing_mask[i][j]:
+                    var = Symbol(f"m_{var_index}", BOOL)
+                    missing_var.append(var)
+                    missing_var_map[(i, j)] = var
+                    var_index += 1
+        # SVM parameters
+        d = len(X[0])
+        w = [Symbol(f"w_{j}", REAL) for j in range(d)]
+        b = Symbol("b", REAL)
+        # Slack parameters
+        m = len(X)
+        s = [Symbol(f"s_{i}", REAL) for i in range(m)]
+
+        # Constraints: slack must be non-negative
+        slack = And([GE(s_i, Real(1)) for s_i in s])
+        constraints = []
+
+        for i in range(m):
+            x_i = []
+            for j in range(d):
+                if missing_mask[i][j]:
+                    m_var = missing_var_map[(i, j)]
+                    x_ij = Ite(m_var, Real(1), Real(0))
+                else:
+                    x_ij = Real(X[i][j])
+                x_i.append(x_ij)
+
+            # compute w^T x_i+b
+            wx = Plus([Times(w[j], x_i[j]) for j in range(d)])
+            wx_b = Plus(wx, b)
+
+            # y_i(w^T x_i + b) >= 1- s_i
+            constraint = GE(Times(Real(y[i]), wx_b), Plus(Real(1), Times(Real(-1), s[i])))
+            constraints.append(constraint)
+        all_constraints = And(constraints)
+
+        # target example satisfies (y_i(w^T x_i + b) <= 1)
+        target_x = []
+        for j in range(d):
+            if missing_mask[targrt_idx][j]:
+                m_var = missing_var_map[(targrt_idx, j)]
+                x_ij = Ite(m_var, Real(1), Real(0))
+            else:
+                x_ij = Real(X[targrt_idx][j])
+            target_x.append(x_ij)
+
+        # compute w^T target_x + b
+        wx_traget = Plus([Times(w[j], target_x[j]) for j in range(d)])
+        wx_traget_b = Plus(wx_traget, b)
+
+        # y_targer(w^T targer_x + b) <= 1
+        support_vector_constraint = LE(Times(Real(y[targrt_idx]), wx_traget_b), Real(1))
+        formular = And(slack, all_constraints, support_vector_constraint)
+        solver.add_assertion(formular)
+
+        if solver.solve():
+            model = solver.get_model()
+            w_values = [model.get_value(w_j) for w_j in w]  # get real w value
+            s_values = [model.get_value(s_j)for s_j in s]
+            b_values = [model.get_value(b)]
+            print("Available w:", w_values)
+            print("Available s:", s_values)
+            print("Available b:", b_values)
+
+        return solver.solve()
+
+
+if __name__ == "__main__":
+    # Example dataset
+    # Features (None indicates missing value)
+    X = [
+        [1.0, None, 3.0, None],
+        [None, 2.0, None, 0.0],
+        [0.0, None, 2.0, None]
+    ]
+    y = [1, -1, 1]
+    missing_mask = [
+        [False, True, False, True],
+        [True, False, True, False],
+        [False, True, False, True]
+    ]
+
+    # Check if example at index 2 can be a support vector
+    target_idx = 2
+    result = check_support_vector(X, y, missing_mask, target_idx)
+    
+
+    print(f"Can example {target_idx} be a support vector? \n{'Yes' if result else 'No'}")
